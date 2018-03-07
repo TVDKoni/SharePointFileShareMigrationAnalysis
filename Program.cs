@@ -287,7 +287,10 @@ namespace SharePointFileShareMigrationAnalysis
                 MaxDegreeOfParallelism = Environment.ProcessorCount > 1 ? Environment.ProcessorCount - 1 : 1 }, 
                 (fi) =>
             {
-                locSize += GetFileSize(fi);
+                long fSize = GetFileSize(fi);
+                if (fSize == 0)
+                    lock (efi) { efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Zero length" }); }
+                locSize += fSize;
                 string fname = GetName(fi);
                 string fext = "";
                 if (fname.IndexOf(".") > -1) fext = fname.Substring(fname.LastIndexOf("."));
