@@ -151,30 +151,34 @@ namespace SharePointFileShareMigrationAnalysis
                 using (StreamWriter ffi = new FileInfo("SPShareAnalysis_Files.csv").CreateText())
                 {
                     ffi.AutoFlush = true;
-                    lock(ffi){ ffi.WriteLine("{0},{1},{2}", new object[] { "Path", "Size", "MaxPathLength" }); }
+                    lock(ffi){ ffi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { "Path", "Size [Bytes]", "PathLength" }); }
                     using (StreamWriter cfi = new FileInfo("SPShareAnalysis_Dirs.csv").CreateText())
                     {
                         cfi.AutoFlush = true;
-                        lock(cfi){ cfi.WriteLine("{0},{1},{2},{3},{4},{5},{6}", new object[] { "Path", "#Files", "#Dirs", "SizeOfFiles", "TotalSize", "TotalFiles", "MaxPathLength" }); }
+                        lock(cfi){ cfi.WriteLine("\"{0}\",\"{1}\",\"{2}\",\"{3}\",\"{4}\",\"{5}\",\"{6}\"", new object[] { "Path", "#Files", "#Dirs", "Size [Bytes]", "TotalSize [Bytes]", "#FilesTotal", "MaxPathLength" }); }
                         using (StreamWriter efi = new FileInfo("SPShareAnalysis_Errors.csv").CreateText())
                         {
                             efi.AutoFlush = true;
-                            lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { "Path", "Type", "Error" }); }
+                            lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { "Path", "Type", "Error" }); }
                             using (StreamWriter tfi = new FileInfo("SPShareAnalysis_Types.csv").CreateText())
                             {
                                 tfi.AutoFlush = true;
-                                lock(tfi){ tfi.WriteLine("{0},{1},{2}", new object[] { "Type", "Count", "Size" }); }
+                                lock(tfi){ tfi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { "Type", "Count", "Total Size [Bytes]" }); }
                                 string[] shares = new string[Properties.Settings.Default.Shares.Count];
+                                string[] paths = new string[Properties.Settings.Default.Paths.Count];
                                 Properties.Settings.Default.Shares.CopyTo(shares, 0);
+                                Properties.Settings.Default.Paths.CopyTo(paths, 0);
                                 Dictionary<string, DirInfo> typeInfo = new Dictionary<string, DirInfo>();
                                 Parallel.ForEach(shares, new ParallelOptions {
                                     MaxDegreeOfParallelism = Environment.ProcessorCount > 1 ? Environment.ProcessorCount - 1 : 1 }, 
                                     (currentShare) =>
                                 {
-                                    GetInfo(currentShare, currentShare, ffi, cfi, efi, typeInfo);
+                                    string currentPath = paths[Array.IndexOf(shares, currentShare)];
+                                    currentPath = currentPath.TrimEnd("/\\".ToCharArray()) + "/";
+                                    GetInfo(currentShare, currentShare, currentPath, ffi, cfi, efi, typeInfo);
                                 });
                                 foreach (KeyValuePair<string, DirInfo> type in typeInfo)
-                                    lock(tfi){ tfi.WriteLine("{0},{1},{2}", new object[] { type.Key, type.Value.Files, type.Value.Size }); }
+                                    lock(tfi){ tfi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { type.Key, type.Value.Files, type.Value.Size }); }
                             }
                         }
                     }
@@ -256,81 +260,87 @@ namespace SharePointFileShareMigrationAnalysis
             return results;
         }
 
-        internal static DirInfo GetInfo(string root, string di, StreamWriter ffi, StreamWriter cfi, StreamWriter efi, Dictionary<string, DirInfo> typeInfo)
+        internal static DirInfo GetInfo(string root, string di, string path, StreamWriter ffi, StreamWriter cfi, StreamWriter efi, Dictionary<string, DirInfo> typeInfo)
         {
             string name = GetName(di);
+            int dirTotLength = di.Length - root.Length + path.Length;
             if (name.IndexOfAny("\\/:*?\"<>|#%".ToCharArray()) > -1)
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "Not allowed character found: \\ / : * ? \" < > | # %" }); }
+                lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "Not allowed character found: \\ / : * ? \" < > | # %" }); }
             if (name.ToCharArray()[0] == '~')
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "A name starting with ~ is not allowed" }); }
+                lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "A name starting with ~ is not allowed" }); }
             if (name.ToCharArray()[0] == '.')
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "A name starting with . is not allowed" }); }
+                lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "A name starting with . is not allowed" }); }
             foreach (string ending in hiddenDirs)
             {
                 if (name.EndsWith(ending))
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "A name ending in " + ending + " will not be visible" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "A name ending in " + ending + " will not be visible" }); }
             }
             if (name == "forms")
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "A name forms is not allowed" }); }
+                lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "A name forms is not allowed" }); }
             if (name.Contains("_vti_"))
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "Folder name should not contain _vti_" }); }
-            if (name.Length > 250)
-                lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { di, "Dir", "Name too long" }); }
+                lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "Folder name should not contain _vti_" }); }
+            if (dirTotLength > 400)
+                efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "Full folder path can have up to 400 characters" });
             List<string> files = GetFiles(di);
-            List<string> subs = GetDirectories(di);
-            long locSize = 0;
-            long subSize = 0;
-            long subCount = files.Count;
-            int maxPathLength = di.Length;
+            List<string> subDirs = GetDirectories(di);
+            long allFilesSize = 0;
+            long subDirsSize = 0;
+            long subDirsFilesCount = files.Count;
+            if ((files.Count + subDirs.Count) > 5000)
+                lock (efi) { efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { di, "Dir", "Directory has more than 5000 elements" }); }
+            long subDirsDirsCount = subDirs.Count;
+            int maxPathLength = dirTotLength;
             Parallel.ForEach(files, new ParallelOptions {
                 MaxDegreeOfParallelism = Environment.ProcessorCount > 1 ? Environment.ProcessorCount - 1 : 1 }, 
                 (fi) =>
             {
-                long fSize = GetFileSize(fi);
-                if (fSize == 0)
-                    lock (efi) { efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Zero length" }); }
-                locSize += fSize;
+                long fileSize = GetFileSize(fi);
+                if (fileSize == 0)
+                    lock (efi) { efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "Zero length" }); }
+                allFilesSize += fileSize;
                 string fname = GetName(fi);
+                int fileTotLength = dirTotLength + 1 + fname.Length;
                 string fext = "";
                 if (fname.IndexOf(".") > -1) fext = fname.Substring(fname.LastIndexOf("."));
                 lock (typeInfo)
                 {
                     if (!typeInfo.ContainsKey(fext)) typeInfo.Add(fext, new DirInfo());
                     typeInfo[fext].Files += 1;
-                    typeInfo[fext].Size += locSize;
+                    typeInfo[fext].Size += fileSize;
                 }
                 if (fname.IndexOfAny("\\/:*?\"<>|#%".ToCharArray()) > -1)
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Not allowed character found: \\ / : * ? \" < > | # %" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "Not allowed character found: \\ / : * ? \" < > | # %" }); }
                 if (fname.ToCharArray()[0] == '~')
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "A name starting with ~ is not allowed" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "A name starting with ~ is not allowed" }); }
                 if (fname.ToCharArray()[0] == '.' && fname.ToCharArray()[1] == '.')
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "A name starting with .. is not allowed" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "A name starting with .. is not allowed" }); }
                 if (fext == ".tmp" || fext == ".ds_store")
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "File extensions .tmp and .ds_store are not allowed" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "File extensions .tmp and .ds_store are not allowed" }); }
                 if (fname == "desktop.ini" || fname == "thumbs.db" || fname == "ehthumbs.db")
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "File names desktop.ini, thumbs.db and ehthumbs.db are not allowed" }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "File names desktop.ini, thumbs.db and ehthumbs.db are not allowed" }); }
                 if ((fi.Length / byteToGb) > 2)
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Too big. only 2GB allowed" }); }
-                if (fname.Length > 256)
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Name too long. Only 256 allowed" }); }
-                if ((fi.Length - root.Length) > 250)
-                    lock(efi){ efi.WriteLine("{0},{1},{2}", new object[] { fi, "File", "Folder name and file name combinations can have up to 250 characters" }); }
-                if (fi.Length > maxPathLength)
-                    maxPathLength = fi.Length;
-                lock(ffi){ ffi.WriteLine("{0},{1},{2}", new object[] { fi, locSize, fname.Length }); }
+                    lock(efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "Too big. only 2GB allowed" }); }
+                if (fileTotLength > 400)
+                    lock (efi){ efi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, "File", "Folder name and file name combinations can have up to 400 characters" }); }
+                if (fileTotLength > maxPathLength)
+                    maxPathLength = fileTotLength;
+                lock(ffi){ ffi.WriteLine("\"{0}\",\"{1}\",\"{2}\"", new object[] { fi, fileSize, fileTotLength }); }
             });
-            Parallel.ForEach(subs, new ParallelOptions {
+            Parallel.ForEach(subDirs, new ParallelOptions {
                 MaxDegreeOfParallelism = Environment.ProcessorCount > 1 ? Environment.ProcessorCount - 1 : 1 }, 
                 (sdi) =>
             {
-                DirInfo subinfo = GetInfo(root, sdi, ffi, cfi, efi, typeInfo);
-                subSize += subinfo.Size;
-                subCount += subinfo.Files;
+                DirInfo subinfo = GetInfo(root, sdi, path, ffi, cfi, efi, typeInfo);
+                lock (subDirs)
+                {
+                    subDirsSize += subinfo.Size;
+                    subDirsFilesCount += subinfo.Files;
+                }
             });
-            lock(cfi){ cfi.WriteLine("{0},{1},{2},{3},{4},{5},{6}", new object[] { di, files.Count, subs.Count, locSize / byteToGb, (locSize + subSize) / byteToGb, subCount, maxPathLength }); }
+            lock(cfi){ cfi.WriteLine("\"{0}\",\"{1}\",\"{2}\",\"{3}\",\"{4}\",\"{5}\",\"{6}\"", new object[] { di, files.Count, subDirs.Count, allFilesSize, (allFilesSize + subDirsSize), subDirsFilesCount, maxPathLength }); }
             DirInfo info = new DirInfo();
-            info.Size = locSize + subSize;
-            info.Files = subCount;
+            info.Size = allFilesSize + subDirsSize;
+            info.Files = subDirsFilesCount;
             return info;
         }
     }
